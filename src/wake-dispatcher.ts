@@ -276,7 +276,10 @@ export class WakeDispatcher {
     }
 
     this.executor.execute(
-      this.transport.buildChatSendArgs(sessionKey, text, true, idempotencyKey),
+      // Routed wakes send explicitly with the message tool. Suppress chat.send's
+      // empty-final fallback there; keep plain replies deliverable for chats
+      // without an origin route.
+      this.transport.buildChatSendArgs(sessionKey, text, !text.includes(ROUTED_REPLY_RULE), idempotencyKey),
       {
         label,
         sessionId: session.id,

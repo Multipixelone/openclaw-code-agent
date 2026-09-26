@@ -271,6 +271,25 @@ describe("resolveSessionRoute", () => {
     );
   });
 
+  it("does not let an internal webchat delivery envelope replace a Telegram session route", () => {
+    assert.deepEqual(
+      resolveSessionRoute({
+        deliveryContext: {
+          channel: "webchat",
+          to: "cli",
+        },
+        messageChannel: "webchat",
+        sessionKey: "agent:main:telegram:direct:123456789",
+      }),
+      {
+        provider: "telegram",
+        target: "123456789",
+        threadId: undefined,
+        sessionKey: "agent:main:telegram:direct:123456789",
+      },
+    );
+  });
+
   it("ignores Telegram senderId fallback when a topic session key is available", () => {
     assert.deepEqual(
       resolveSessionRoute({

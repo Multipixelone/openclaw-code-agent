@@ -260,6 +260,31 @@ describe("session-route", () => {
     });
   });
 
+  it("repairs an internal webchat CLI envelope from an authoritative Telegram session key", () => {
+    const route = routeFromOriginMetadata(
+      "webchat|cli",
+      undefined,
+      "agent:main:telegram:direct:123456789",
+    );
+    assert.deepEqual(route, {
+      provider: "telegram",
+      target: "123456789",
+      threadId: undefined,
+      sessionKey: "agent:main:telegram:direct:123456789",
+    });
+  });
+
+  it("preserves a real webchat route when no external session route is recoverable", () => {
+    const route = routeFromOriginMetadata("webchat|cli");
+    assert.deepEqual(route, {
+      provider: "webchat",
+      accountId: undefined,
+      target: "cli",
+      threadId: undefined,
+      sessionKey: undefined,
+    });
+  });
+
   it("falls back when a three-part origin channel is missing its target segment", () => {
     const route = routeFromOriginMetadata(
       "telegram|bot|",

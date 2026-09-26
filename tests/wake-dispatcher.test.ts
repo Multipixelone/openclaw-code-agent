@@ -1827,6 +1827,7 @@ describe("WakeDispatcher", () => {
 
     await waitFor(() => wakeSucceeded === 1, "routed completion wake accepted");
     assert.deepEqual(calls.map((call) => call.kind), ["chat-send"]);
+    assert.equal(asChatSend(calls[0]).deliver, false);
     assert.deepEqual(heartbeats, []);
     assert.equal(wakeFailed, 0);
   });

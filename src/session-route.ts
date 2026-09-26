@@ -28,6 +28,8 @@ const KNOWN_SESSION_ROUTE_PROVIDERS = new Set([
 /** Peer kinds of host session keys (`buildAgentSessionKey`). */
 const PEER_KINDS = new Set(["direct", "dm", "group", "channel"]);
 
+const INTERNAL_ENVELOPE_PROVIDERS = new Set(["webchat"]);
+
 type ParsedTelegramTopicConversation = {
   chatId: string;
   topicId: string;
@@ -290,6 +292,18 @@ export function routeFromOriginMetadata(
     return sessionKeyRoute
       ? withThreadOverride(sessionKeyRoute, explicitThreadId)
       : buildSystemRoute(originSessionKey);
+  }
+
+  // Gateway-generated wakes and inter-session continuations can arrive through
+  // an internal webchat|cli envelope even when they operate on an external
+  // channel session. The session key is durable route identity; do not let the
+  // transient internal envelope redirect user notifications away from it.
+  if (
+    sessionKeyRoute
+    && INTERNAL_ENVELOPE_PROVIDERS.has(normalizedProvider)
+    && sessionKeyRoute.provider !== normalizedProvider
+  ) {
+    return withThreadOverride(sessionKeyRoute, explicitThreadId);
   }
 
   const target = normalizedProvider === "discord"

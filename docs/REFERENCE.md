@@ -865,6 +865,8 @@ Tool launches resolve the origin channel in this order:
 
 Thread routing is separate from channel routing. When OpenClaw provides the originating session key or thread ID, notifications return to the exact thread or topic where the session started.
 
+Gateway-generated wakes and inter-session continuations may carry an internal `webchat|cli` envelope even when they operate on a Telegram, Discord, or other external-channel session. When that internal envelope conflicts with a recoverable external route in `originSessionKey`, the session-key route is authoritative. This prevents an internal continuation from being recorded as a successful notification to an invisible CLI/webchat surface.
+
 Session-key recovery follows OpenClaw's current provider-owned grammar: generic `:thread:` suffixes (Discord, Slack, and other channels) use the public `openclaw/plugin-sdk/routing` `parseThreadSessionSuffix` helper, for both the route and the session's recorded origin thread. Telegram forum `:topic:` suffixes are parsed by OCA itself: the host's topic helpers are private to the Telegram channel plugin and the private-local `channel-route` runtime, and the public `parseAgentSessionKey` lower-cases peer ids, so it cannot recover a deliverable target.
 
 Prefer fully routable channel strings in `fallbackChannel` and `agentChannels`. A bare provider such as `telegram` is treated as a weak fallback; the plugin will repair topic routing from `originSessionKey` when it can, but explicit channel targets remain the cleanest configuration.
