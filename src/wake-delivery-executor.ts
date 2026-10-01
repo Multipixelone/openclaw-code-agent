@@ -1,4 +1,5 @@
 import * as childProcess from "child_process";
+import { callGatewayFromCli } from "openclaw/plugin-sdk/gateway-runtime";
 import { KeyedOperationQueue } from "./keyed-operation-queue";
 import { createLogger } from "./logger";
 
@@ -43,6 +44,8 @@ type ExecuteOptions = {
   successValidator?: (stdout: string) => DispatchSuccessValidationResult | Promise<DispatchSuccessValidationResult>;
   shouldContinue?: () => boolean;
   terminalOnFailure?: boolean;
+  /** Explicit origin fields require authenticated admin scope, unavailable in CLI flags. */
+  gatewayRpc?: { method: "chat.send"; params: Record<string, unknown> };
 };
 
 function errorMessage(err: unknown): string {
@@ -56,12 +59,15 @@ class DispatchTimeoutError extends Error {
   }
 }
 
+class DispatchNotSubmittedError extends Error {}
+
 function createDispatchTimeoutError(): Error {
   return new DispatchTimeoutError();
 }
 
 export const wakeDeliveryExecutorInternals = {
   execFile: childProcess.execFile,
+  callGatewayFromCli,
 };
 
 type RetryTimerEntry = {
@@ -73,6 +79,7 @@ export class WakeDeliveryExecutor {
   private pendingRetryTimers: Map<string, Set<RetryTimerEntry>> = new Map();
   private orderedDispatches = new KeyedOperationQueue();
   private disposed = false;
+  private readonly gatewayRequests = new Set<AbortController>();
 
   clearPendingRetries(): void {
     for (const entries of this.pendingRetryTimers.values()) {
@@ -96,6 +103,8 @@ export class WakeDeliveryExecutor {
 
   dispose(): void {
     this.disposed = true;
+    for (const controller of this.gatewayRequests) controller.abort();
+    this.gatewayRequests.clear();
     this.clearPendingRetries();
     this.orderedDispatches.clear();
   }
@@ -167,13 +176,7 @@ export class WakeDeliveryExecutor {
       maxAttempts: WAKE_MAX_ATTEMPTS,
     });
 
-    // chat.send wakes shell out to the local OpenClaw CLI: the in-process gateway
-    // request surface is reserved for trusted plugins.
-    wakeDeliveryExecutorInternals.execFile(
-      "openclaw",
-      [...args],
-      { timeout: WAKE_CLI_TIMEOUT_MS, killSignal: "SIGKILL" },
-      async (err, stdout, stderr) => {
+    const onResult = async (err: unknown, stdout: string, stderr: string): Promise<void> => {
         if (this.disposed) {
           onSettled?.();
           return;
@@ -335,7 +338,41 @@ export class WakeDeliveryExecutor {
           this.pendingRetryTimers.set(opts.sessionId, new Set());
         }
         this.pendingRetryTimers.get(opts.sessionId)!.add(entry);
-      },
+    };
+    if (opts.gatewayRpc) {
+      const controller = new AbortController();
+      this.gatewayRequests.add(controller);
+      // This public helper creates an ordinary authenticated WS client. It
+      // requests admin scope; the Gateway still checks credentials and grants.
+      // It does not use the trusted plugin runtime.gateway.request surface.
+      void this.executePromiseWithTimeout(() => {
+        if (this.disposed || opts.shouldContinue?.() === false) throw new DispatchNotSubmittedError();
+        return wakeDeliveryExecutorInternals.callGatewayFromCli(
+          opts.gatewayRpc!.method,
+          { json: true, timeout: String(WAKE_CLI_TIMEOUT_MS) },
+          opts.gatewayRpc!.params,
+          { scopes: ["operator.admin"], progress: false, sharedStateMode: "read-only", signal: controller.signal },
+        );
+      }).finally(() => {
+        controller.abort();
+        this.gatewayRequests.delete(controller);
+      }).then(
+        (result) => onResult(null, JSON.stringify(result), ""),
+        (error: unknown) => {
+          if (error instanceof DispatchNotSubmittedError) {
+            opts.onAdmissionRejected?.();
+            opts.onAmbiguousResult?.();
+            onSettled?.();
+            return;
+          }
+          return onResult(error, "", errorMessage(error));
+        },
+      ).catch(() => { onSettled?.(); });
+      return;
+    }
+    wakeDeliveryExecutorInternals.execFile(
+      "openclaw", [...args], { timeout: WAKE_CLI_TIMEOUT_MS, killSignal: "SIGKILL" },
+      (err, stdout, stderr) => { void onResult(err, stdout, stderr).catch(() => { onSettled?.(); }); },
     );
   }
 
@@ -493,7 +530,7 @@ export class WakeDeliveryExecutor {
       });
   }
 
-  private executePromiseWithTimeout(task: () => Promise<PromiseDeliveryResult>): Promise<PromiseDeliveryResult> {
+  private executePromiseWithTimeout<T>(task: () => Promise<T>): Promise<T> {
     return new Promise((resolve, reject) => {
       let settled = false;
       const timer = setTimeout(() => {

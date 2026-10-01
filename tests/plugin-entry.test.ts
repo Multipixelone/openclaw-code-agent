@@ -771,6 +771,17 @@ describe("plugin entry source", () => {
           : { runId, status: "ok", terminalReceipt: { runId, sourceReplyDelivered: true } }), ""));
         return {};
       }) as typeof wakeDeliveryExecutorInternals.execFile);
+      const sdk = t.mock.method(wakeDeliveryExecutorInternals, "callGatewayFromCli", async (method, opts, params, extra) => {
+        assert.deepEqual(extra?.scopes, ["operator.admin"]);
+        assert.equal(extra?.sharedStateMode, "read-only");
+        return await new Promise<Record<string, unknown>>((resolve, reject) => {
+          wakeDeliveryExecutorInternals.execFile("openclaw", ["gateway", "call", method, "--json", "--timeout", opts.timeout!, "--params", JSON.stringify(params)], {},
+            (error, stdout) => {
+              if (error) { reject(error); return; }
+              try { resolve(JSON.parse(stdout)); } catch (parseError) { reject(parseError); }
+            });
+        });
+      });
       const waitForDelivery = async () => {
         for (let attempt = 0; attempt < 40; attempt += 1) {
           if (!sessionManager?.getPersistedSession(row.sessionId!)?.completionWakeSummaryRequired) return;
@@ -808,6 +819,7 @@ describe("plugin entry source", () => {
       } finally {
         await host.stopServices();
         cli.mock.restore();
+        sdk.mock.restore();
         if (previousIndexPath === undefined) delete process.env.OPENCLAW_CODE_AGENT_SESSIONS_PATH;
         else process.env.OPENCLAW_CODE_AGENT_SESSIONS_PATH = previousIndexPath;
       }

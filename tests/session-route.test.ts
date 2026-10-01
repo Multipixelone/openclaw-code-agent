@@ -302,6 +302,27 @@ describe("session-route", () => {
     }
   });
 
+  it("removes external account and thread metadata from persisted WebChat UI routes and wake blocks", () => {
+    const sessionKey = "agent:main:telegram:group:-100123:topic:77";
+    const source = {
+      route: { provider: "webchat", accountId: "telegram-bot", target: sessionKey, threadId: "77", sessionKey },
+      originChannel: `webchat|${sessionKey}`,
+      originSessionKey: sessionKey,
+      originThreadId: 77,
+    };
+    assert.deepEqual(canonicalizeSessionRoute(source), {
+      provider: "webchat", accountId: undefined, target: sessionKey, threadId: undefined, sessionKey,
+    });
+    const block = formatOriginRouteWakeBlock(source);
+    assert.match(block, /"provider":"webchat"/);
+    assert.match(block, new RegExp(`"target":"${sessionKey}"`));
+    assert.doesNotMatch(block, /"(?:accountId|threadId)":/);
+    assert.ok(!block.includes(ROUTED_REPLY_RULE));
+    assert.match(block, /ordinary visible final answer in this WebChat session/);
+    assert.match(block, /Do not use the message tool/);
+    assert.doesNotMatch(block, /NO_REPLY/);
+  });
+
   it("recovers the CLI route's account and topic while respecting an explicit thread", () => {
     const sessionKey = "agent:main:telegram:second-bot:direct:123456789:topic:77";
     assert.deepEqual(routeFromOriginMetadata("webchat|cli", 88, sessionKey), {

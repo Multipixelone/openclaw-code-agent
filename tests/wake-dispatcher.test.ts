@@ -50,8 +50,8 @@ function buildRoute(overrides: Partial<NonNullable<FakeSession["route"]>> = {}):
  * `sendDurableMessageBatch` params (direct notifications, through the real
  * `RuntimeDirectNotificationTransport`), `runtime.system.enqueueSystemEvent`
  * calls (through the real `RuntimeSystemEventTransport`), and the
- * `openclaw gateway call chat.send` argv (the only delivery that still runs the
- * CLI, through the executor's `execFile` hook).
+ * chat.send params and agent.wait argv. The authenticated SDK and CLI are
+ * separately stubbed at the executor boundary.
  */
 type DurableSendCall = {
   kind: "durable-send";
@@ -171,6 +171,25 @@ const fakeChatSendExecFile = ((file: string, args: string[], _options: unknown, 
 }) as unknown as typeof wakeDeliveryExecutorInternals.execFile;
 
 const originalExecFile = wakeDeliveryExecutorInternals.execFile;
+const originalGatewayCall = wakeDeliveryExecutorInternals.callGatewayFromCli;
+const fakeGatewayCall: typeof originalGatewayCall = async (method, opts, params, extra) => {
+  assert.equal(method, "chat.send");
+  assert.equal(opts.json, true);
+  assert.equal(opts.timeout, "30000");
+  assert.deepEqual(extra?.scopes, ["operator.admin"]);
+  assert.equal(extra?.sharedStateMode, "read-only");
+  assert.equal(extra?.progress, false);
+  assert.ok(extra?.signal);
+  return await new Promise<Record<string, unknown>>((resolve, reject) => {
+    // Both test seams share the scripted host responses; this never invokes
+    // the real SDK helper or a subprocess.
+    wakeDeliveryExecutorInternals.execFile("openclaw", ["gateway", "call", method, "--json", "--timeout", "30000", "--params", JSON.stringify(params)], {},
+      (err, stdout) => {
+        if (err) { reject(err); return; }
+        try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
+      });
+  });
+};
 
 function createDispatcher(options: WakeDispatcherOptions = {}) {
   return new WakeDispatcher({
@@ -237,6 +256,7 @@ describe("WakeDispatcher", () => {
     agentWaitReply = undefined;
     setPluginRuntime({ system: fakeSystemRuntime }, { channels: {} });
     wakeDeliveryExecutorInternals.execFile = fakeChatSendExecFile;
+    wakeDeliveryExecutorInternals.callGatewayFromCli = fakeGatewayCall;
   });
 
   afterEach(() => {
@@ -246,6 +266,7 @@ describe("WakeDispatcher", () => {
     global.setTimeout = originalSetTimeout;
     global.clearTimeout = originalClearTimeout;
     wakeDeliveryExecutorInternals.execFile = originalExecFile;
+    wakeDeliveryExecutorInternals.callGatewayFromCli = originalGatewayCall;
     setPluginRuntime(undefined);
     delete process.env.OPENCLAW_CODE_AGENT_BUTTON_DIAGNOSTICS;
   });
@@ -2104,6 +2125,44 @@ describe("WakeDispatcher", () => {
     assert.equal(submitted.params.idempotencyKey, "saved-unsubmitted-run");
     assert.equal(submitted.params.message, ROUTED_REPLY_RULE);
     assert.equal(submitted.params.deliver, false);
+    assert.deepEqual(heartbeats, []);
+    dispatcher.dispose();
+  });
+
+  it("pins WebChat completion wakes to an explicit internal origin even on an external-shaped session key", async () => {
+    let sdkCalls = 0;
+    wakeDeliveryExecutorInternals.callGatewayFromCli = async (...args) => {
+      sdkCalls += 1;
+      return await fakeGatewayCall(...args);
+    };
+    agentWaitReply = (runId) => JSON.stringify({ runId, status: "ok", terminalReply: { disposition: "visible", text: "Visible WebChat summary" } });
+    const dispatcher = createDispatcher();
+    let started = false;
+    let routedReply: boolean | undefined;
+    const key = "agent:main:telegram:group:chat:topic:22";
+    dispatcher.dispatchSessionNotification({
+      id: "ordinary-webchat", route: { provider: "webchat", target: key, sessionKey: key, accountId: "legacy-bot", threadId: "22" },
+      originThreadId: 22,
+    } as any, {
+      label: "ordinary-webchat",
+      wakeMessage: "Reply with an ordinary visible final answer in this WebChat session.",
+      completionWakeSummaryRequired: true,
+      notifyUser: "never",
+      hooks: {
+        onWakeAdmitted: (_runId, contract) => { routedReply = contract; },
+        onWakeSucceeded: () => { started = true; },
+      },
+    });
+    await waitFor(() => started, "visible WebChat final received");
+    assert.equal(sdkCalls, 1);
+    assert.equal(routedReply, false);
+    assert.deepEqual(calls.map((call) => call.kind), ["chat-send", "agent-wait"]);
+    const submitted = findCall("chat-send")!;
+    assert.equal(submitted.params.deliver, false);
+    assert.equal(submitted.params.originatingChannel, "webchat");
+    assert.equal(submitted.params.originatingTo, key);
+    assert.equal(submitted.params.originatingAccountId, undefined);
+    assert.equal(submitted.params.originatingThreadId, undefined);
     assert.deepEqual(heartbeats, []);
     dispatcher.dispose();
   });

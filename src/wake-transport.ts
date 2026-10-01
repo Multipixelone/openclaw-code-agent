@@ -11,17 +11,16 @@ export interface WakeOriginRoute {
 }
 
 /**
- * Builds the `openclaw gateway call chat.send` wake subprocess arguments.
+ * Builds chat.send wake params and ordinary CLI arguments.
  *
- * `chat.send` stays a CLI subprocess: the in-process `runtime.gateway.request`
- * surface grants operator scopes only to trusted plugins, which OCA is not.
+ * Explicit origins require an authenticated SDK call requesting admin
+ * scope: the stock CLI requests only write scope for chat.send. Origin-free chat.send
+ * and agent.wait use the CLI; runtime.gateway.request remains trusted-only.
  *
- * N3 (decision): the params travel in argv, visible to other local users in
- * `ps` for the call's lifetime. `openclaw gateway call` has no stdin or file
- * option for params (2026.9.6), and the in-process alternatives are worse: a
- * system event prefixes every line, agent output included, with `System:` in
- * the orchestrator's prompt, and `runtime.subagent.run` starts an `agent` run
- * (not a `chat.send` turn) and is bound only inside a Gateway request scope.
+ * N3 (decision): ordinary CLI wake params travel in argv, visible to other
+ * local users in `ps` for the call's lifetime. `openclaw gateway call` has no
+ * stdin or file option for params (2026.9.7). Explicit-origin SDK calls carry
+ * their params over the authenticated WebSocket without a subprocess.
  * See docs/SECURITY.md (Subprocess Inventory).
  */
 export class WakeTransport {
@@ -42,19 +41,29 @@ export class WakeTransport {
       "--timeout",
       "30000",
       "--params",
-      JSON.stringify({
-        sessionKey,
-        message: text,
-        deliver,
-        idempotencyKey,
-        ...(originRoute ? {
-          originatingChannel: originRoute.channel,
-          originatingTo: originRoute.target,
-          ...(originRoute.accountId ? { originatingAccountId: originRoute.accountId } : {}),
-          ...(originRoute.threadId ? { originatingThreadId: originRoute.threadId } : {}),
-        } : {}),
-      }),
+      JSON.stringify(this.buildChatSendParams(sessionKey, text, deliver, idempotencyKey, originRoute)),
     ];
+  }
+
+  buildChatSendParams(
+    sessionKey: string,
+    text: string,
+    deliver: boolean,
+    idempotencyKey: string,
+    originRoute?: WakeOriginRoute,
+  ): Record<string, unknown> {
+    return {
+      sessionKey,
+      message: text,
+      deliver,
+      idempotencyKey,
+      ...(originRoute ? {
+        originatingChannel: originRoute.channel,
+        originatingTo: originRoute.target,
+        ...(originRoute.accountId ? { originatingAccountId: originRoute.accountId } : {}),
+        ...(originRoute.threadId ? { originatingThreadId: originRoute.threadId } : {}),
+      } : {}),
+    };
   }
 
   buildAgentWaitArgs(runId: string): string[] {

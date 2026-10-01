@@ -316,14 +316,19 @@ export class WakeDispatcher {
 
     let ambiguityReason = "wake delivery remains unconfirmed";
     const submittedRunId = admittedWakeRunId ?? idempotencyKey ?? randomUUID();
+    const explicitOrigin = !observeOnly && route && (route.channel === "webchat" || text.includes(ROUTED_REPLY_RULE))
+      ? route : undefined;
+    // WebChat final events are visible internally without automatic channel
+    // delivery. Explicit deliver=true would switch the host out of its internal
+    // source policy and could require an external message-tool reply.
+    const deliver = route?.channel !== "webchat" && !text.includes(ROUTED_REPLY_RULE);
     const args = observeOnly
       ? this.transport.buildAgentWaitArgs(admittedWakeRunId!)
-      : this.transport.buildChatSendArgs(sessionKey!, text, !text.includes(ROUTED_REPLY_RULE), submittedRunId,
-        text.includes(ROUTED_REPLY_RULE) && route?.channel !== "webchat" ? route : undefined);
+      : this.transport.buildChatSendArgs(sessionKey!, text, deliver, submittedRunId,
+        explicitOrigin);
     const dispatch = (): void => this.executor.execute(
-      // Routed wakes send explicitly with the message tool. Suppress chat.send's
-      // empty-final fallback there; keep plain replies deliverable for chats
-      // without an origin route.
+      // Routed external wakes send with the message tool; WebChat keeps the
+      // host's internal final-event path. Both suppress automatic channel delivery.
       args,
       {
         label,
@@ -332,6 +337,12 @@ export class WakeDispatcher {
         phase,
         routeSummary: `session:${sessionKey}`,
         messageKind: "wake",
+        ...(explicitOrigin ? {
+          gatewayRpc: {
+            method: "chat.send" as const,
+            params: this.transport.buildChatSendParams(sessionKey!, text, deliver, submittedRunId, explicitOrigin),
+          },
+        } : {}),
         dispatchContext: this.buildDispatchContext({
           routeSummary: `session:${sessionKey}`,
           route,

@@ -305,6 +305,18 @@ export function routeFromOriginMetadata(
     return withThreadOverride(sessionKeyRoute, explicitThreadId);
   }
 
+  // WebChat addresses the opened session itself. A topic/thread or account
+  // inherited from that session's external channel is not a UI address.
+  if (normalizedProvider === "webchat") {
+    return {
+      provider: normalizedProvider,
+      accountId: undefined,
+      target: rawTarget,
+      threadId: undefined,
+      sessionKey: originSessionKey?.trim() || undefined,
+    };
+  }
+
   const target = normalizedProvider === "discord"
     ? normalizeDiscordTarget(rawTarget, originSessionKey)
     : rawTarget;
@@ -348,15 +360,10 @@ function compactRouteObject(route: Record<string, string | undefined>): Record<s
 }
 
 /**
- * How the orchestrator reaches the user from a wake. A plain reply to an OCA
- * wake is not a reliable delivery path: the wake is a `chat.send` turn without
- * an originating route (that needs the operator.admin scope), so the host keeps
- * the reply internal for session keys that do not name the chat's channel
- * (dmScope `per-peer`, cron, sub-agent, ACP or custom keys), and runtimes whose
- * visible replies default to the message tool (the Codex runtime) never
- * deliver a plain reply at all. The message tool to the origin route works in
- * every case; final=true marks the send as the visible answer, and NO_REPLY
- * keeps the turn's ordinary final answer silent.
+ * External wake replies use a final message-tool send to the pinned origin
+ * route. Its host receipt establishes delivery even for session keys that do
+ * not name the external channel (per-peer, cron, sub-agent, ACP or custom
+ * keys). WebChat instead uses its own visible final-answer contract below.
  */
 export const ROUTED_REPLY_RULE =
   "To tell the user anything, use message(action='send', final=true) to originRoute (channel = provider, target, accountId and threadId only when originRoute has them), then answer NO_REPLY. An ordinary final assistant reply to this wake is private and does not replace the message-tool send.";
@@ -370,10 +377,15 @@ export function formatOriginRouteWakeBlock(source: SessionRouteSource): string {
     provider: route?.provider,
     accountId: route?.accountId,
     target: route?.target,
-    threadId: route?.threadId ?? (source.originThreadId != null ? String(source.originThreadId) : undefined),
+    threadId: route?.provider === "webchat"
+      ? undefined
+      : route?.threadId ?? (source.originThreadId != null ? String(source.originThreadId) : undefined),
   });
 
   if (Object.keys(originRoute).length === 0) return "";
 
-  return [`originRoute: ${JSON.stringify(originRoute)}`, ROUTED_REPLY_RULE].join("\n");
+  const replyRule = route?.provider === "webchat"
+    ? "Reply with an ordinary visible final answer in this WebChat session. Do not use the message tool to send this update."
+    : ROUTED_REPLY_RULE;
+  return [`originRoute: ${JSON.stringify(originRoute)}`, replyRule].join("\n");
 }

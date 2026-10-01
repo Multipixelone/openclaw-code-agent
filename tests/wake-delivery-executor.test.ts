@@ -443,6 +443,118 @@ describe("WakeDeliveryExecutor", () => {
     }
   });
 
+  it("requests authenticated admin scope for explicit-origin wakes and validates the acknowledgement before success", async (t) => {
+    const executor = new WakeDeliveryExecutor();
+    const params = new WakeTransport().buildChatSendParams("agent:main:custom-peer", "Summary", false, "origin-run", {
+      channel: "telegram", target: "chat", accountId: "second-bot", threadId: "topic",
+    });
+    t.mock.method(wakeDeliveryExecutorInternals, "execFile", fakeExecFile(() => assert.fail("explicit origins must not use the write-only CLI")));
+    let invoked = false;
+    t.mock.method(wakeDeliveryExecutorInternals, "callGatewayFromCli", async (method, opts, submitted, extra) => {
+      invoked = true;
+      assert.equal(method, "chat.send");
+      assert.deepEqual(submitted, params);
+      assert.deepEqual(opts, { json: true, timeout: "30000" });
+      assert.deepEqual(extra?.scopes, ["operator.admin"]);
+      assert.equal(extra?.sharedStateMode, "read-only");
+      assert.equal(extra?.progress, false);
+      assert.equal(extra?.signal?.aborted, false);
+      return { runId: "origin-run", status: "started" };
+    });
+    const outcomes: string[] = [];
+    executor.execute([], {
+      label: "completion-wake", sessionId: "session-origin", target: "chat.send", phase: "wake",
+      routeSummary: "session:agent:main:custom-peer", messageKind: "wake", gatewayRpc: { method: "chat.send", params },
+      successValidator: (stdout) => {
+        assert.deepEqual(JSON.parse(stdout), { runId: "origin-run", status: "started" });
+        return { outcome: "ambiguous", reason: "admission alone cannot prove the summary was delivered" };
+      },
+      onSuccess: () => { outcomes.push("completed"); },
+      onFinalFailure: () => { outcomes.push("fallback"); },
+      onAmbiguousResult: () => { outcomes.push("pending"); },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(invoked, true);
+    assert.deepEqual(outcomes, ["pending"]);
+    executor.dispose();
+  });
+
+  it("keeps a timed-out authenticated SDK submission unknown and ignores its late result", async (t) => {
+    const executor = new WakeDeliveryExecutor();
+    let finish!: (result: Record<string, unknown>) => void;
+    let signal: AbortSignal | undefined;
+    t.mock.method(wakeDeliveryExecutorInternals, "callGatewayFromCli", async (_method, _opts, _params, extra) => {
+      signal = extra?.signal;
+      return await new Promise<Record<string, unknown>>((resolve) => { finish = resolve; });
+    });
+    global.setTimeout = (((callback: () => void) => {
+      setImmediate(callback);
+      return { unref() {} } as never;
+    }) as typeof setTimeout);
+    global.clearTimeout = (() => {}) as typeof clearTimeout;
+    const outcomes: string[] = [];
+    executor.execute([], {
+      label: "completion-wake", sessionId: "session-timeout", target: "chat.send", phase: "wake",
+      routeSummary: "session:custom", messageKind: "wake", gatewayRpc: { method: "chat.send", params: {} },
+      onAdmissionRejected: () => { outcomes.push("not-submitted"); },
+      onSuccess: () => { outcomes.push("completed"); },
+      onFinalFailure: () => { outcomes.push("fallback"); },
+      onAmbiguousResult: () => { outcomes.push("pending"); },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(outcomes, ["pending"]);
+    assert.equal(signal?.aborted, true);
+    finish({ runId: "late", status: "started" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(outcomes, ["pending"]);
+    executor.dispose();
+  });
+
+  it("aborts an in-flight SDK client on disposal without proving its run was unsubmitted", async (t) => {
+    const executor = new WakeDeliveryExecutor();
+    let signal: AbortSignal | undefined;
+    let finish!: () => void;
+    t.mock.method(wakeDeliveryExecutorInternals, "callGatewayFromCli", async (_method, _opts, _params, extra) => {
+      signal = extra?.signal;
+      return await new Promise<Record<string, unknown>>((resolve) => { finish = () => resolve({ runId: "stopping", status: "started" }); });
+    });
+    const outcomes: string[] = [];
+    executor.execute([], {
+      label: "completion-wake", sessionId: "session-disposed", target: "chat.send", phase: "wake",
+      routeSummary: "session:custom", messageKind: "wake", gatewayRpc: { method: "chat.send", params: {} },
+      onAdmissionRejected: () => { outcomes.push("not-submitted"); },
+      onSuccess: () => { outcomes.push("completed"); },
+      onFinalFailure: () => { outcomes.push("fallback"); },
+      onAmbiguousResult: () => { outcomes.push("pending"); },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(signal?.aborted, false);
+    executor.dispose();
+    assert.equal(signal?.aborted, true);
+    finish();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(outcomes, [], "the pending journal remains unknown after client abort");
+  });
+
+  it("marks SDK work unsubmitted if its guard changes before the public helper is called", async (t) => {
+    const executor = new WakeDeliveryExecutor();
+    let current = true;
+    const sdk = t.mock.method(wakeDeliveryExecutorInternals, "callGatewayFromCli", async () => assert.fail("cancelled submission must not connect"));
+    const outcomes: string[] = [];
+    executor.execute([], {
+      label: "completion-wake", sessionId: "session-cancelled", target: "chat.send", phase: "wake",
+      routeSummary: "session:custom", messageKind: "wake", gatewayRpc: { method: "chat.send", params: {} },
+      shouldContinue: () => current,
+      onAdmissionRejected: () => { outcomes.push("not-submitted"); },
+      onAmbiguousResult: () => { outcomes.push("pending"); },
+    });
+    current = false;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(sdk.mock.callCount(), 0);
+    assert.deepEqual(outcomes, ["not-submitted", "pending"]);
+    executor.dispose();
+  });
+
   it("releases a retained candidate if the final executor preflight prevents submission", (t) => {
     let submitted = false;
     t.mock.property(wakeDeliveryExecutorInternals, "execFile", fakeExecFile(() => { submitted = true; }));
