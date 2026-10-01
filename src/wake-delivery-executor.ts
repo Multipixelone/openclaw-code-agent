@@ -16,6 +16,7 @@ export type DispatchTarget = "chat.send" | "message.send" | "system.event";
 export type DispatchPhase = "notify" | "wake";
 export type DispatchSuccessValidationResult =
   | { outcome: "success" }
+  | { outcome: "ambiguous"; reason: string }
   | { outcome: "skipped"; reason: string }
   | { outcome: "failure"; reason: string };
 
@@ -37,8 +38,9 @@ type ExecuteOptions = {
    * callers never trigger a second delivery path for a send that may land later.
    */
   onAmbiguousResult?: () => void;
+  onAdmissionRejected?: () => void;
   onFinalFailure?: () => void;
-  successValidator?: (stdout: string) => DispatchSuccessValidationResult;
+  successValidator?: (stdout: string) => DispatchSuccessValidationResult | Promise<DispatchSuccessValidationResult>;
   shouldContinue?: () => boolean;
   terminalOnFailure?: boolean;
 };
@@ -99,12 +101,28 @@ export class WakeDeliveryExecutor {
   }
 
   execute(args: string[], opts: ExecuteOptions, attempt: number = 1): void {
-    if (this.disposed) return;
+    if (this.disposed) {
+      if (opts.onAdmissionRejected) {
+        opts.onAdmissionRejected();
+        opts.onAmbiguousResult?.();
+      }
+      return;
+    }
     if (attempt === 1 && opts.orderingKey) {
       this.enqueueOrderedDispatch(opts.orderingKey, (onSettled) => this.executeNow(args, opts, onSettled, attempt));
       return;
     }
     this.executeNow(args, opts, undefined, attempt);
+  }
+
+  /** Observe an admitted wake through the same CLI boundary without resending it. */
+  request(args: string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+      wakeDeliveryExecutorInternals.execFile(
+        "openclaw", [...args], { timeout: WAKE_CLI_TIMEOUT_MS, killSignal: "SIGKILL" },
+        (err, stdout) => err ? reject(err) : resolve(stdout ?? ""),
+      );
+    });
   }
 
   /**
@@ -128,6 +146,10 @@ export class WakeDeliveryExecutor {
     attempt: number = 1,
   ): void {
     if (this.disposed || opts.shouldContinue?.() === false) {
+      if (opts.onAdmissionRejected) {
+        opts.onAdmissionRejected();
+        opts.onAmbiguousResult?.();
+      }
       onSettled?.();
       return;
     }
@@ -151,14 +173,35 @@ export class WakeDeliveryExecutor {
       "openclaw",
       [...args],
       { timeout: WAKE_CLI_TIMEOUT_MS, killSignal: "SIGKILL" },
-      (err, stdout, stderr) => {
+      async (err, stdout, stderr) => {
         if (this.disposed) {
           onSettled?.();
           return;
         }
         const elapsedMs = Date.now() - startedAt;
         if (!err) {
-          const validation = opts.successValidator?.(stdout ?? "");
+          let validation: DispatchSuccessValidationResult | undefined;
+          try {
+            validation = await opts.successValidator?.(stdout ?? "");
+          } catch {
+            // A validator may be observing an already admitted host run. An
+            // observation error cannot establish that resending is safe.
+            validation = { outcome: "ambiguous", reason: "wake result observation failed" };
+          }
+          if (this.disposed || opts.shouldContinue?.() === false) {
+            onSettled?.();
+            return;
+          }
+          if (validation?.outcome === "ambiguous") {
+            this.log("warn", "dispatch_ambiguous", {
+              label: opts.label, sessionId: opts.sessionId, target: opts.target,
+              phase: opts.phase, messageKind: opts.messageKind, route: opts.routeSummary,
+              attempt, elapsedMs: Date.now() - startedAt, reason: validation.reason,
+            });
+            opts.onAmbiguousResult?.();
+            onSettled?.();
+            return;
+          }
           if (validation?.outcome === "failure") {
             this.log("error", "dispatch_success_validation_failed", {
               label: opts.label,
@@ -219,6 +262,21 @@ export class WakeDeliveryExecutor {
 
         const stderrSuffix = stderr?.trim() ? ` | stderr: ${stderr.trim()}` : "";
         if (opts.shouldContinue?.() === false) {
+          onSettled?.();
+          return;
+        }
+        const definitelyRejected = (err as NodeJS.ErrnoException).code === "ENOENT"
+          || stderr?.includes("originating route fields require admin scope") === true;
+        if (opts.onAmbiguousResult && opts.target === "chat.send" && !definitelyRejected) {
+          // A CLI timeout or connection failure can happen after admission.
+          // Keep the pending wake; never start a second heartbeat delivery.
+          opts.onAmbiguousResult();
+          onSettled?.();
+          return;
+        }
+        if (definitelyRejected && opts.onAdmissionRejected) {
+          opts.onAdmissionRejected();
+          opts.onFinalFailure?.();
           onSettled?.();
           return;
         }

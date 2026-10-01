@@ -420,6 +420,69 @@ describe("WakeDeliveryExecutor", () => {
     assert.deepEqual(outcomes, ["skipped: the orchestrator already replied"]);
   });
 
+  it("distinguishes a proven pre-admission rejection from transport ambiguity", async (t) => {
+    for (const failure of ["ENOENT", "originating route fields require admin scope"]) {
+      const executor = new WakeDeliveryExecutor();
+      t.mock.property(wakeDeliveryExecutorInternals, "execFile", fakeExecFile((_file, _args, callback) => {
+        const error = execError(failure);
+        if (failure === "ENOENT") error.code = "ENOENT";
+        queueMicrotask(() => callback(error, "", failure));
+      }));
+      const outcomes: string[] = [];
+      executor.execute(chatSendArgs("rejected"), {
+        label: "completion-wake", sessionId: "session-rejected", target: "chat.send", phase: "wake",
+        routeSummary: "session:agent:main:main", messageKind: "wake",
+        onAdmissionRejected: () => { outcomes.push("rejected"); },
+        onFinalFailure: () => { outcomes.push("fallback"); },
+        onAmbiguousResult: () => { outcomes.push("ambiguous"); },
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(outcomes, ["rejected", "fallback"]);
+      executor.dispose();
+      t.mock.restoreAll();
+    }
+  });
+
+  it("releases a retained candidate if the final executor preflight prevents submission", (t) => {
+    let submitted = false;
+    t.mock.property(wakeDeliveryExecutorInternals, "execFile", fakeExecFile(() => { submitted = true; }));
+    for (const disposed of [false, true]) {
+      const executor = new WakeDeliveryExecutor();
+      if (disposed) executor.dispose();
+      const outcomes: string[] = [];
+      executor.execute(chatSendArgs("unsubmitted"), {
+        label: "completion-wake", sessionId: "session-unsent", target: "chat.send", phase: "wake",
+        routeSummary: "session:agent:main:main", messageKind: "wake",
+        shouldContinue: () => disposed,
+        onAdmissionRejected: () => { outcomes.push("rejected"); },
+        onAmbiguousResult: () => { outcomes.push("pending"); },
+        onFinalFailure: () => { outcomes.push("fallback"); },
+      });
+      assert.deepEqual(outcomes, ["rejected", "pending"]);
+      executor.dispose();
+    }
+    assert.equal(submitted, false);
+  });
+
+  it("contains an asynchronous observation rejection without success or fallback", async (t) => {
+    const executor = new WakeDeliveryExecutor();
+    t.mock.property(wakeDeliveryExecutorInternals, "execFile", fakeExecFile((_file, _args, callback) => {
+      queueMicrotask(() => callback(null, "ack", ""));
+    }));
+    const outcomes: string[] = [];
+    executor.execute(chatSendArgs("observe"), {
+      label: "completion-wake", sessionId: "session-observe", target: "chat.send", phase: "wake",
+      routeSummary: "session:agent:main:main", messageKind: "wake",
+      successValidator: async () => { throw new Error("observation disconnected"); },
+      onSuccess: () => { outcomes.push("success"); },
+      onFinalFailure: () => { outcomes.push("fallback"); },
+      onAmbiguousResult: () => { outcomes.push("ambiguous"); },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(outcomes, ["ambiguous"]);
+    executor.dispose();
+  });
+
   it("does not report a validator skip once the dispatch no longer applies", async (t) => {
     const executor = new WakeDeliveryExecutor();
     t.mock.property(wakeDeliveryExecutorInternals, "execFile", fakeExecFile((_file, _args, callback) => {

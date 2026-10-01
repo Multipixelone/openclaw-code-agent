@@ -28,8 +28,6 @@ const KNOWN_SESSION_ROUTE_PROVIDERS = new Set([
 /** Peer kinds of host session keys (`buildAgentSessionKey`). */
 const PEER_KINDS = new Set(["direct", "dm", "group", "channel"]);
 
-const INTERNAL_ENVELOPE_PROVIDERS = new Set(["webchat"]);
-
 type ParsedTelegramTopicConversation = {
   chatId: string;
   topicId: string;
@@ -294,14 +292,15 @@ export function routeFromOriginMetadata(
       : buildSystemRoute(originSessionKey);
   }
 
-  // Gateway-generated wakes and inter-session continuations can arrive through
-  // an internal webchat|cli envelope even when they operate on an external
-  // channel session. The session key is durable route identity; do not let the
-  // transient internal envelope redirect user notifications away from it.
+  // Recover only the CLI continuation envelope. Real WebChat turns target the
+  // canonical session key, including when the UI opens an external-channel
+  // session; that explicit internal origin must remain internal.
   if (
     sessionKeyRoute
-    && INTERNAL_ENVELOPE_PROVIDERS.has(normalizedProvider)
-    && sessionKeyRoute.provider !== normalizedProvider
+    && normalizedProvider === "webchat"
+    && parts.length === 2
+    && rawTarget === "cli"
+    && sessionKeyRoute.provider !== "system"
   ) {
     return withThreadOverride(sessionKeyRoute, explicitThreadId);
   }

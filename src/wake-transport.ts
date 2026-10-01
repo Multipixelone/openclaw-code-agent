@@ -3,6 +3,13 @@ import { getPluginRuntime } from "./runtime-store";
 
 export interface WakeTransportOptions {}
 
+export interface WakeOriginRoute {
+  channel: string;
+  target: string;
+  accountId?: string;
+  threadId?: string;
+}
+
 /**
  * Builds the `openclaw gateway call chat.send` wake subprocess arguments.
  *
@@ -25,12 +32,13 @@ export class WakeTransport {
     text: string,
     deliver: boolean,
     idempotencyKey: string = randomUUID(),
+    originRoute?: WakeOriginRoute,
   ): string[] {
     return [
       "gateway",
       "call",
       "chat.send",
-      "--expect-final",
+      "--json",
       "--timeout",
       "30000",
       "--params",
@@ -39,7 +47,20 @@ export class WakeTransport {
         message: text,
         deliver,
         idempotencyKey,
+        ...(originRoute ? {
+          originatingChannel: originRoute.channel,
+          originatingTo: originRoute.target,
+          ...(originRoute.accountId ? { originatingAccountId: originRoute.accountId } : {}),
+          ...(originRoute.threadId ? { originatingThreadId: originRoute.threadId } : {}),
+        } : {}),
       }),
+    ];
+  }
+
+  buildAgentWaitArgs(runId: string): string[] {
+    return [
+      "gateway", "call", "agent.wait", "--json", "--timeout", "30000",
+      "--params", JSON.stringify({ runId, timeoutMs: 25000 }),
     ];
   }
 }
