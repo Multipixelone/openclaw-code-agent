@@ -114,7 +114,6 @@ describe("resolveAgentLaunchRequest", () => {
         { prompt: "Start work", workdir: "/tmp" },
         {
           workspaceDir: "/tmp", sessionKey, messageChannel: "webchat",
-          messageThreadId: 77,
           deliveryContext: { channel: "webchat", to: sessionKey, accountId: "external-account", threadId: 77 },
         },
         { list: () => [], listPersistedSessions: () => [] },

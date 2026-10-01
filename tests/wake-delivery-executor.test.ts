@@ -450,7 +450,7 @@ describe("WakeDeliveryExecutor", () => {
     });
     t.mock.method(wakeDeliveryExecutorInternals, "execFile", fakeExecFile(() => assert.fail("explicit origins must not use the write-only CLI")));
     let invoked = false;
-    t.mock.method(wakeDeliveryExecutorInternals, "callGatewayFromCli", async (method, opts, submitted, extra) => {
+    t.mock.method(wakeDeliveryExecutorInternals, "callGatewayFromCli", async (...[method, opts, submitted, extra]: Parameters<typeof wakeDeliveryExecutorInternals.callGatewayFromCli>) => {
       invoked = true;
       assert.equal(method, "chat.send");
       assert.deepEqual(submitted, params);
@@ -483,14 +483,14 @@ describe("WakeDeliveryExecutor", () => {
     const executor = new WakeDeliveryExecutor();
     let finish!: (result: Record<string, unknown>) => void;
     let signal: AbortSignal | undefined;
-    t.mock.method(wakeDeliveryExecutorInternals, "callGatewayFromCli", async (_method, _opts, _params, extra) => {
+    t.mock.method(wakeDeliveryExecutorInternals, "callGatewayFromCli", async (...[_method, _opts, _params, extra]: Parameters<typeof wakeDeliveryExecutorInternals.callGatewayFromCli>) => {
       signal = extra?.signal;
       return await new Promise<Record<string, unknown>>((resolve) => { finish = resolve; });
     });
     global.setTimeout = (((callback: () => void) => {
       setImmediate(callback);
       return { unref() {} } as never;
-    }) as typeof setTimeout);
+    }) as unknown as typeof setTimeout);
     global.clearTimeout = (() => {}) as typeof clearTimeout;
     const outcomes: string[] = [];
     executor.execute([], {
@@ -514,7 +514,7 @@ describe("WakeDeliveryExecutor", () => {
     const executor = new WakeDeliveryExecutor();
     let signal: AbortSignal | undefined;
     let finish!: () => void;
-    t.mock.method(wakeDeliveryExecutorInternals, "callGatewayFromCli", async (_method, _opts, _params, extra) => {
+    t.mock.method(wakeDeliveryExecutorInternals, "callGatewayFromCli", async (...[_method, _opts, _params, extra]: Parameters<typeof wakeDeliveryExecutorInternals.callGatewayFromCli>) => {
       signal = extra?.signal;
       return await new Promise<Record<string, unknown>>((resolve) => { finish = () => resolve({ runId: "stopping", status: "started" }); });
     });

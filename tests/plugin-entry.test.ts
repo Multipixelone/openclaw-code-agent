@@ -771,7 +771,7 @@ describe("plugin entry source", () => {
           : { runId, status: "ok", terminalReceipt: { runId, sourceReplyDelivered: true } }), ""));
         return {};
       }) as typeof wakeDeliveryExecutorInternals.execFile);
-      const sdk = t.mock.method(wakeDeliveryExecutorInternals, "callGatewayFromCli", async (method, opts, params, extra) => {
+      const sdk = t.mock.method(wakeDeliveryExecutorInternals, "callGatewayFromCli", async (...[method, opts, params, extra]: Parameters<typeof wakeDeliveryExecutorInternals.callGatewayFromCli>) => {
         assert.deepEqual(extra?.scopes, ["operator.admin"]);
         assert.equal(extra?.sharedStateMode, "read-only");
         return await new Promise<Record<string, unknown>>((resolve, reject) => {
