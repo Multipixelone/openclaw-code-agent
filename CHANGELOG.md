@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep recoverable external session-key routes authoritative when Gateway wakes arrive through an internal `webchat|cli` envelope.
+- Suppress automatic delivery for routed wake turns and explicitly mark message-tool follow-ups as final, avoiding invisible or duplicate completion summaries.
+
 ## [5.0.1] - 2026-09-30
 
 ### Changed

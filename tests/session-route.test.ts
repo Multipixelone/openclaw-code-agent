@@ -343,8 +343,9 @@ describe("wake reply rule", () => {
       const block = formatOriginRouteWakeBlock({ route: { provider: "telegram", target: "5551234", sessionKey } });
       assert.equal(block, `originRoute: {"provider":"telegram","target":"5551234"}\n${ROUTED_REPLY_RULE}`);
     }
-    assert.match(ROUTED_REPLY_RULE, /message tool to originRoute/);
+    assert.match(ROUTED_REPLY_RULE, /message\(action='send', final=true\) to originRoute/);
     assert.match(ROUTED_REPLY_RULE, /accountId and threadId only when originRoute has them/);
+    assert.match(ROUTED_REPLY_RULE, /ordinary final assistant reply to this wake is private/);
     const scoped = formatOriginRouteWakeBlock({
       route: { provider: "telegram", accountId: "second-bot", target: "5551234", sessionKey: "agent:main:telegram:direct:5551234" },
     });

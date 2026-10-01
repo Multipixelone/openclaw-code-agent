@@ -356,10 +356,11 @@ function compactRouteObject(route: Record<string, string | undefined>): Record<s
  * (dmScope `per-peer`, cron, sub-agent, ACP or custom keys), and runtimes whose
  * visible replies default to the message tool (the Codex runtime) never
  * deliver a plain reply at all. The message tool to the origin route works in
- * every case; NO_REPLY then keeps the turn's final answer silent.
+ * every case; final=true marks the send as the visible answer, and NO_REPLY
+ * keeps the turn's ordinary final answer silent.
  */
 export const ROUTED_REPLY_RULE =
-  "To tell the user anything, send it with the message tool to originRoute (channel = provider, target, accountId and threadId only when originRoute has them), then answer NO_REPLY.";
+  "To tell the user anything, use message(action='send', final=true) to originRoute (channel = provider, target, accountId and threadId only when originRoute has them), then answer NO_REPLY. An ordinary final assistant reply to this wake is private and does not replace the message-tool send.";
 
 export function formatOriginRouteWakeBlock(source: SessionRouteSource): string {
   const route = canonicalizeSessionRoute(source);
